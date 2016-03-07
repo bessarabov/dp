@@ -89,7 +89,7 @@ sub main {
             $image = substr($image, 0, 30) . '...';
         }
 
-        $length{name} = length($name) if length($name) > ($length{name} // 0);
+        $length{name} = length($name) if (length($name) // 0) > ($length{name} // 0);
         $length{image} = length($image) if length($image) > ($length{image} // 0);
         $length{ports} = length($ports) if length($ports) > ($length{ports} // 0);
 
