@@ -1,0 +1,127 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings FATAL => 'all';
+use feature 'say';
+use utf8;
+use open qw(:std :utf8);
+
+use feature 'say';
+use HTTP::Tiny;
+use JSON::PP;
+
+sub _exit_with_error {
+    my ($message) = @_;
+
+    say $message;
+    exit 1;
+}
+
+sub _get_docker_host_and_port {
+    if (defined $ENV{DOCKER_HOST}) {
+        my ($host_port) = $ENV{DOCKER_HOST} =~ m{tcp://(.*)};
+        return $host_port;
+    } else {
+        _exit_with_error('Environment variable DOCKER_HOST is not set');
+    }
+}
+
+sub _get_containers_json {
+
+    my $json;
+
+    my $url = '/containers/json?all=1';
+
+    if (-e '/var/run/docker.sock') {
+
+        my $answer = `/bin/echo -e "GET $url HTTP/1.0\r\n" | nc -U /var/run/docker.sock`;
+
+        $json = $answer;
+        $json =~ s/.*?(\[.*)/$1/ms;
+
+    } else {
+
+        if (not defined $ENV{DOCKER_CERT_PATH}) {
+            _exit_with_error('Environment variable DOCKER_CERT_PATH is not set');
+        }
+
+        my $response = HTTP::Tiny->new(
+            SSL_options => {
+                SSL_cert_file => "$ENV{DOCKER_CERT_PATH}/cert.pem",
+                SSL_key_file => "$ENV{DOCKER_CERT_PATH}/key.pem",
+            }
+        )->get(sprintf("https://%s%s", _get_docker_host_and_port(), $url));
+
+        $json = $response->{content};
+    }
+
+    return $json;
+}
+
+
+sub main {
+
+    my $docker_answer = decode_json(_get_containers_json());
+
+    my $data;
+    my %length = map { $_ => 10 } qw(name image ports);
+
+    foreach my $container (reverse @{$docker_answer}) {
+
+        my ($name) =
+            map { s{^/}{}; $_; }
+            grep {not m(/.*/)}
+            @{$container->{Names}}
+            ;
+
+        my $ports =
+            join ', ' ,
+            map { $_->{PublicPort} . ':' . $_->{PrivatePort}}
+            sort { $a->{PublicPort} <=> $b->{PublicPort} }
+            grep { $_->{PublicPort} }
+            @{$container->{Ports}}
+            ;
+
+        my $image = $container->{Image};
+        $image =~ s{^.*/}{.../};
+
+        if (length $image > 35) {
+            $image = substr($image, 0, 30) . '...';
+        }
+
+        $length{name} = length($name) if length($name) > ($length{name} // 0);
+        $length{image} = length($image) if length($image) > ($length{image} // 0);
+        $length{ports} = length($ports) if length($ports) > ($length{ports} // 0);
+
+        push @{$data}, {
+            status => ($container->{Status} =~ /Up/ ? 'up' : 'down'),
+            name => ( $name // substr($container->{Id}, 0, 10) ),
+            ports => $ports,
+            image => $image,
+        };
+
+    }
+
+    my $format = "%s  %-$length{name}s  %-$length{image}s  %-$length{ports}s";
+    say sprintf(
+        $format,
+        'S',
+        'NAME',
+        'IMAGE',
+        'PORTS',
+    );
+
+    foreach my $element (@{$data}) {
+        say sprintf(
+            $format,
+            (
+                $element->{status} =~ /up/ ? 'U' : '-'
+            ),
+            $element->{name},
+            $element->{image},
+            $element->{ports},
+        );
+    }
+
+}
+main();
